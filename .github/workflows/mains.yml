@@ -1,48 +1,20 @@
-name: Screenshot
-
-on:
-  workflow_dispatch:
+name: Camoufox Scraper
+on: [workflow_dispatch]
 
 jobs:
-  screenshot:
+  scrape:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Install Linux dependencies
+      - name: Install Camoufox
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            xvfb \
-            libgtk-3-0 \
-            libdbus-glib-1-2 \
-            libnss3 \
-            libx11-xcb1 \
-            libxcomposite1 \
-            libxdamage1 \
-            libxrandr2 \
-            libgbm1 \
-            libasound2t64
+          pip install -U camoufox[geoip]
+          python -m camoufox fetch
 
-      - name: Install Python packages
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run script
-        run: |
-          xvfb-run -a python main.py
-
-      - name: Upload screenshot as artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: screenshot
-          path: screenshot.png
+      - name: Run scraper
+        run: python scraper.py
