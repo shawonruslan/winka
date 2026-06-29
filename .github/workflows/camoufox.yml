@@ -1,13 +1,20 @@
 name: Camoufox Scraper with Recording
-on: [workflow_dispatch]
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 15
 
-      - uses: actions/setup-python@v5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -16,49 +23,114 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y xvfb ffmpeg curl
 
-      - name: Cache Camoufox
+      - name: Cache Camoufox browser
         uses: actions/cache@v4
         with:
           path: ~/.cache/camoufox
-          key: camoufox-${{ runner.os }}
+          key: camoufox-${{ runner.os }}-v1
 
-      - name: Install Camoufox
+      - name: Install Python dependencies
         run: |
-          pip install -U camoufox[geoip]
+          pip install --upgrade pip
+          pip install "playwright==1.47.0" "camoufox[geoip]"
           python -m camoufox fetch
 
-      - name: Start Xvfb
+      - name: Start Xvfb virtual display
         run: |
-          Xvfb :99 -screen 0 1280x720x24 &
+          Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset > xvfb.log 2>&1 &
           echo "DISPLAY=:99" >> $GITHUB_ENV
-          sleep 2
+          sleep 3
+          echo "✅ Xvfb started"
 
       - name: Start screen recording
         run: |
           ffmpeg -y -f x11grab -video_size 1280x720 -framerate 15 -i :99 \
-            -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+            -c:v libx264 -preset ultrafast -pix_fmt yuv420p -crf 28 \
             recording.mp4 > ffmpeg.log 2>&1 &
           echo $! > ffmpeg.pid
           sleep 2
+          echo "✅ Recording started (PID: $(cat ffmpeg.pid))"
 
       - name: Run scraper
         run: python scraper.py
         continue-on-error: true
 
       - name: Stop screen recording
+        if: always()
         run: |
-          kill -INT $(cat ffmpeg.pid) || true
-          sleep 3
-          ls -lh recording.mp4
+          if [ -f ffmpeg.pid ]; then
+            kill -INT $(cat ffmpeg.pid) 2>/dev/null || true
+            sleep 4
+            kill -9 $(cat ffmpeg.pid) 2>/dev/null || true
+          fi
+          echo "📁 Recording file info:"
+          ls -lh recording.mp4 || echo "❌ No recording file produced"
+          SIZE=$(stat -c%s recording.mp4 2>/dev/null || echo 0)
+          echo "RECORDING_SIZE=$SIZE" >> $GITHUB_ENV
+          if [ "$SIZE" -lt 10000 ]; then
+            echo "⚠️  Warning: recording is very small ($SIZE bytes) - browser may have crashed early"
+          fi
 
-      - name: Upload to 0x0.st
+      - name: Upload recording (with fallback)
+        if: always()
         run: |
-          echo "Uploading recording..."
-          URL=$(curl -sS -F "file=@recording.mp4" -F "expires=24" \
-            -H "User-Agent: gha-uploader/1.0" https://0x0.st)
+          set +e
+          FILE="recording.mp4"
+
+          if [ ! -f "$FILE" ] || [ ! -s "$FILE" ]; then
+            echo "❌ No recording file to upload"
+            exit 0
+          fi
+
+          URL=""
+
+          echo "▶ Trying catbox.moe..."
+          RESP=$(curl -sS --max-time 120 -F "reqtype=fileupload" -F "fileToUpload=@$FILE" https://catbox.moe/user/api.php)
+          if [[ "$RESP" == https://* ]]; then
+            URL="$RESP"
+          fi
+
+          if [ -z "$URL" ]; then
+            echo "▶ Trying tmpfiles.org..."
+            RESP=$(curl -sS --max-time 120 -F "file=@$FILE" https://tmpfiles.org/api/v1/upload)
+            URL=$(echo "$RESP" | grep -oP '"url":"\K[^"]+' | sed 's|tmpfiles.org/|tmpfiles.org/dl/|')
+          fi
+
+          if [ -z "$URL" ]; then
+            echo "▶ Trying file.io..."
+            RESP=$(curl -sS --max-time 120 -F "file=@$FILE" "https://file.io/?expires=1d")
+            URL=$(echo "$RESP" | grep -oP '"link":"\K[^"]+')
+          fi
+
+          if [ -z "$URL" ]; then
+            echo "▶ Trying uguu.se..."
+            URL=$(curl -sS --max-time 120 -F "files[]=@$FILE" "https://uguu.se/upload?output=text")
+          fi
+
+          if [ -z "$URL" ]; then
+            echo "▶ Trying transfer.sh..."
+            URL=$(curl -sS --max-time 120 --upload-file "$FILE" "https://transfer.sh/$FILE")
+          fi
+
           echo "============================================"
-          echo "📹 Recording URL: $URL"
+          if [ -n "$URL" ] && [[ "$URL" == http* ]]; then
+            echo "📹 Recording URL: $URL"
+            echo "### 📹 Screen Recording" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "[⬇️ Download recording]($URL)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Size:** $(ls -lh recording.mp4 | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ All upload services failed"
+            echo "### ❌ Upload Failed" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
           echo "============================================"
-          echo "### 📹 Screen Recording" >> $GITHUB_STEP_SUMMARY
-          echo "[Download recording]($URL)" >> $GITHUB_STEP_SUMMARY
-          echo "Expires in 24 hours" >> $GITHUB_STEP_SUMMARY
+
+      - name: Show ffmpeg log on failure
+        if: failure()
+        run: |
+          echo "===== ffmpeg.log ====="
+          cat ffmpeg.log || true
+          echo "===== xvfb.log ====="
+          cat xvfb.log || true
