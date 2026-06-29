@@ -192,8 +192,16 @@ with Camoufox(
 
         time.sleep(10)
         page.screenshot(path='4_after_otp.png', full_page=True)
-        print(f"📍 Final URL: {page.url}")
-        print(f"📄 Final title: {page.title()}")
+        print(f"📍 URL after OTP: {page.url}")
+        print(f"📄 Title after OTP: {page.title()}")
+
+    # ===== STEP 4: Navigate to Gemini =====
+    print("🌐 Loading Gemini...")
+    page.goto('https://gemini.google.com/', wait_until='domcontentloaded')
+    time.sleep(10)
+    page.screenshot(path='5_gemini.png', full_page=True)
+    print(f"📍 Gemini URL: {page.url}")
+    print(f"📄 Gemini Title: {page.title()}")
 
     time.sleep(3)
 
