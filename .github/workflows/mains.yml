@@ -1,110 +1,25 @@
-name: Brave Google Sign-in Recording (GIF)
+name: Screenshot
 
 on:
   workflow_dispatch:
-    inputs:
-      email:
-        description: "Email to type"
-        required: false
-        default: "jahiskeina@gmail.com"
-      duration:
-        description: "Max recording duration in seconds"
-        required: false
-        default: "30"
 
 jobs:
-  record:
+  screenshot:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Install Brave, Xvfb, ffmpeg, Python deps
-        run: |
-          sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
-            https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" \
-            | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
-          sudo apt-get update
-          sudo apt-get install -y brave-browser xvfb ffmpeg python3-pip
-          pip3 install undetected-chromedriver setuptools
+      - uses: actions/checkout@v4
 
-      - name: Start virtual display
-        run: |
-          Xvfb :99 -screen 0 1280x720x24 &
-          echo "DISPLAY=:99" >> $GITHUB_ENV
-          sleep 2
-
-      - name: Start screen recording
-        run: |
-          ffmpeg -y -video_size 1280x720 -framerate 15 -f x11grab -i :99 \
-            -t ${{ github.event.inputs.duration }} \
-            -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-            recording.mp4 &
-          echo $! > ffmpeg.pid
-          sleep 1
-
-      - name: Run undetected-chromedriver automation
-        env:
-          EMAIL: ${{ github.event.inputs.email }}
-        run: |
-          cat > automate.py <<'EOF'
-          import os, time
-          import undetected_chromedriver as uc
-          from selenium.webdriver.common.by import By
-          from selenium.webdriver.common.keys import Keys
-          from selenium.webdriver.support.ui import WebDriverWait
-          from selenium.webdriver.support import expected_conditions as EC
-
-          email = os.environ["EMAIL"]
-
-          opts = uc.ChromeOptions()
-          opts.binary_location = "/usr/bin/brave-browser"
-          opts.add_argument("--no-sandbox")
-          opts.add_argument("--disable-dev-shm-usage")
-          opts.add_argument("--window-size=1280,720")
-          opts.add_argument("--start-maximized")
-          opts.add_argument("--lang=en-US")
-
-          # use_subprocess=True is more stable on Linux CI
-          driver = uc.Chrome(options=opts, use_subprocess=True, version_main=None)
-
-          try:
-              driver.get("https://accounts.google.com/")
-              field = WebDriverWait(driver, 20).until(
-                  EC.presence_of_element_located((By.ID, "identifierId"))
-              )
-              time.sleep(2)
-              # Type slowly so it's visible in the GIF
-              for ch in email:
-                  field.send_keys(ch)
-                  time.sleep(0.1)
-              time.sleep(1)
-              field.send_keys(Keys.ENTER)
-              # Wait so the next page is captured in the recording
-              time.sleep(10)
-          finally:
-              try:
-                  driver.quit()
-              except Exception:
-                  pass
-          EOF
-          python3 automate.py || true
-
-      - name: Stop recording
-        if: always()
-        run: |
-          [ -f ffmpeg.pid ] && kill $(cat ffmpeg.pid) 2>/dev/null || true
-          sleep 3
-
-      - name: Convert mp4 to optimized GIF
-        run: |
-          ffmpeg -y -i recording.mp4 \
-            -vf "fps=12,scale=960:-1:flags=lanczos,palettegen" palette.png
-          ffmpeg -y -i recording.mp4 -i palette.png \
-            -lavfi "fps=12,scale=960:-1:flags=lanczos [x]; [x][1:v] paletteuse" \
-            recording.gif
-          ls -lh recording.gif
-
-      - name: Upload GIF artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/setup-python@v5
         with:
-          name: brave-recording-gif
-          path: recording.gif
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          pip install -r requirements.txt
+
+      - name: Run
+        run: |
+          xvfb-run -a python main.py
