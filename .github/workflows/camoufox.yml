@@ -119,44 +119,41 @@ jobs:
             echo "[⬇️ Download recording]($URL)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Size:** $(ls -lh recording.mp4 | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ All upload services failed"
             echo "### ❌ Recording upload failed" >> $GITHUB_STEP_SUMMARY
           fi
           echo "============================================"
 
-      - name: Upload screenshot
+      - name: Upload screenshots
         if: always()
         run: |
           set +e
-          if [ ! -f after_email.png ]; then
-            echo "ℹ️  No screenshot to upload"
-            exit 0
-          fi
+          echo "### 📸 Screenshots" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
-          URL=""
-          echo "▶ Uploading screenshot to catbox.moe..."
-          RESP=$(curl -sS --max-time 60 -F "reqtype=fileupload" -F "fileToUpload=@after_email.png" https://catbox.moe/user/api.php)
-          if [[ "$RESP" == https://* ]]; then
-            URL="$RESP"
-          fi
+          for SHOT in after_email.png after_password.png password_error.png; do
+            if [ -f "$SHOT" ]; then
+              echo "▶ Uploading $SHOT..."
+              URL=$(curl -sS --max-time 60 -F "reqtype=fileupload" -F "fileToUpload=@$SHOT" https://catbox.moe/user/api.php)
 
-          if [ -z "$URL" ]; then
-            echo "▶ Trying tmpfiles.org..."
-            RESP=$(curl -sS --max-time 60 -F "file=@after_email.png" https://tmpfiles.org/api/v1/upload)
-            URL=$(echo "$RESP" | grep -oP '"url":"\K[^"]+' | sed 's|tmpfiles.org/|tmpfiles.org/dl/|')
-          fi
+              if [[ "$URL" != https://* ]]; then
+                RESP=$(curl -sS --max-time 60 -F "file=@$SHOT" https://tmpfiles.org/api/v1/upload)
+                URL=$(echo "$RESP" | grep -oP '"url":"\K[^"]+' | sed 's|tmpfiles.org/|tmpfiles.org/dl/|')
+              fi
 
-          if [ -n "$URL" ] && [[ "$URL" == http* ]]; then
-            echo "📸 Screenshot URL: $URL"
-            echo "### 📸 Screenshot" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "[🖼️ View screenshot]($URL)" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "![Screenshot]($URL)" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ Screenshot upload failed"
-          fi
+              if [ -n "$URL" ] && [[ "$URL" == http* ]]; then
+                echo "  ✅ $SHOT: $URL"
+                echo "**$SHOT**" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "![${SHOT}]($URL)" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "  ❌ Failed to upload $SHOT"
+              fi
+            fi
+          done
 
       - name: Show logs on failure
         if: failure()
