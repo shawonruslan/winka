@@ -7,5 +7,5 @@ with Camoufox(
     # proxy={'server': 'http://user:pass@host:port'},
 ) as browser:
     page = browser.new_page()
-    page.goto('https://example.com')
+    page.goto('https://accounts.google.com')
     print(page.title())
