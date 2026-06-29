@@ -136,8 +136,33 @@ with Camoufox(
     print(f"📍 URL after password: {page.url}")
 
     # ===== STEP 3: OTP =====
-    print("🔍 Checking if OTP challenge is shown...")
+    print("🔍 Checking if OTP challenge or sign-in choice is shown...")
 
+    # 1. Handle "Choose how you want to sign in" selection screen if present
+    try:
+        choice_loc = page.get_by_text(
+            re.compile(r"Get a verification code at|Choose how you want to sign in|Confirm your recovery email", re.IGNORECASE)
+        ).first
+        
+        # Wait up to 3 seconds for the selection screen
+        choice_loc.wait_for(state='visible', timeout=3000)
+        print("📋 'Choose how you want to sign in' screen detected.")
+        
+        get_code_opt = page.get_by_text(re.compile(r"Get a verification code at", re.IGNORECASE)).first
+        try:
+            get_code_opt.wait_for(state='visible', timeout=2000)
+            print("👉 Clicking 'Get a verification code at...'")
+            get_code_opt.click()
+        except Exception:
+            print("👉 Clicking the default verification option")
+            choice_loc.click()
+            
+        time.sleep(5)
+        page.screenshot(path='2.5_after_challenge_select.png', full_page=True)
+    except Exception:
+        print("ℹ️ No challenge selection screen detected (or already on OTP input screen)")
+
+    # 2. Find the OTP input field
     otp_selectors = [
         'input[name="totpPin"]',
         'input[name="idvAnyPhonePin"]',
