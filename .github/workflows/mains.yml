@@ -10,7 +10,7 @@ on:
       duration:
         description: "Max recording duration in seconds"
         required: false
-        default: "25"
+        default: "30"
 
 jobs:
   record:
@@ -24,7 +24,7 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
           sudo apt-get update
           sudo apt-get install -y brave-browser xvfb ffmpeg python3-pip
-          pip3 install selenium webdriver-manager
+          pip3 install undetected-chromedriver setuptools
 
       - name: Start virtual display
         run: |
@@ -41,60 +41,57 @@ jobs:
           echo $! > ffmpeg.pid
           sleep 1
 
-      - name: Run Selenium automation
+      - name: Run undetected-chromedriver automation
         env:
           EMAIL: ${{ github.event.inputs.email }}
         run: |
           cat > automate.py <<'EOF'
           import os, time
-          from selenium import webdriver
-          from selenium.webdriver.chrome.service import Service
-          from selenium.webdriver.chrome.options import Options
+          import undetected_chromedriver as uc
           from selenium.webdriver.common.by import By
           from selenium.webdriver.common.keys import Keys
           from selenium.webdriver.support.ui import WebDriverWait
           from selenium.webdriver.support import expected_conditions as EC
-          from webdriver_manager.chrome import ChromeDriverManager
 
           email = os.environ["EMAIL"]
 
-          opts = Options()
+          opts = uc.ChromeOptions()
           opts.binary_location = "/usr/bin/brave-browser"
           opts.add_argument("--no-sandbox")
-          opts.add_argument("--disable-gpu")
           opts.add_argument("--disable-dev-shm-usage")
           opts.add_argument("--window-size=1280,720")
-          opts.add_argument("--user-data-dir=/tmp/brave-profile")
+          opts.add_argument("--start-maximized")
+          opts.add_argument("--lang=en-US")
 
-          driver = webdriver.Chrome(
-              service=Service(ChromeDriverManager().install()),
-              options=opts,
-          )
+          # use_subprocess=True is more stable on Linux CI
+          driver = uc.Chrome(options=opts, use_subprocess=True, version_main=None)
 
           try:
               driver.get("https://accounts.google.com/")
-              field = WebDriverWait(driver, 15).until(
+              field = WebDriverWait(driver, 20).until(
                   EC.presence_of_element_located((By.ID, "identifierId"))
               )
-              time.sleep(2)  # let the page settle on the recording
+              time.sleep(2)
               # Type slowly so it's visible in the GIF
               for ch in email:
                   field.send_keys(ch)
-                  time.sleep(0.08)
+                  time.sleep(0.1)
               time.sleep(1)
               field.send_keys(Keys.ENTER)
-              # Allow time for the next page to load and be captured
-              time.sleep(8)
+              # Wait so the next page is captured in the recording
+              time.sleep(10)
           finally:
-              driver.quit()
+              try:
+                  driver.quit()
+              except Exception:
+                  pass
           EOF
-          python3 automate.py
+          python3 automate.py || true
 
       - name: Stop recording
         if: always()
         run: |
           [ -f ffmpeg.pid ] && kill $(cat ffmpeg.pid) 2>/dev/null || true
-          # Wait for ffmpeg to flush the file
           sleep 3
 
       - name: Convert mp4 to optimized GIF
