@@ -17,19 +17,28 @@ def fetch_google_otp(timeout=120, poll_interval=5):
     """Poll the recovery Gmail inbox via IMAP for a Google verification code."""
     print(f"📬 Connecting to IMAP for {RECOVERY_EMAIL}...")
     start_time = time.time()
-    since_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    # Use 2 min window so we catch emails that just arrived
+    since_time = datetime.now(timezone.utc) - timedelta(minutes=2)
+
+    mail = None
+    try:
+        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        mail.login(RECOVERY_EMAIL, RECOVERY_APP_PASSWORD)
+        print("✅ IMAP login successful")
+    except Exception as e:
+        raise RuntimeError(f"❌ IMAP login failed: {e}")
 
     while time.time() - start_time < timeout:
         try:
-            mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-            mail.login(RECOVERY_EMAIL, RECOVERY_APP_PASSWORD)
             mail.select("inbox")
 
+            # ✅ SINCE must NOT have quotes around the date
             date_str = since_time.strftime("%d-%b-%Y")
             status, messages = mail.search(
                 None,
-                f'(FROM "no-reply@accounts.google.com" SINCE "{date_str}")'
+                f'(FROM "no-reply@accounts.google.com" SINCE {date_str})'
             )
+            print(f"🔍 IMAP search status={status}, ids={messages}")
 
             if status == "OK" and messages[0]:
                 ids = messages[0].split()
@@ -39,9 +48,17 @@ def fetch_google_otp(timeout=120, poll_interval=5):
                         continue
 
                     msg = email.message_from_bytes(data[0][1])
-                    msg_date = email.utils.parsedate_to_datetime(msg["Date"])
-                    if msg_date < since_time:
-                        continue
+                    msg_date_str = msg.get("Date", "")
+                    try:
+                        msg_date = email.utils.parsedate_to_datetime(msg_date_str)
+                        # Make naive datetimes timezone-aware for comparison
+                        if msg_date.tzinfo is None:
+                            msg_date = msg_date.replace(tzinfo=timezone.utc)
+                        if msg_date < since_time:
+                            print(f"⏩ Skipping old email from {msg_date}")
+                            continue
+                    except Exception as de:
+                        print(f"⚠️  Could not parse email date '{msg_date_str}': {de}")
 
                     subject_raw = decode_header(msg["Subject"])[0]
                     subject = subject_raw[0]
@@ -49,23 +66,47 @@ def fetch_google_otp(timeout=120, poll_interval=5):
                         subject = subject.decode(errors="ignore")
                     print(f"📧 Found email: {subject}")
 
-                    body = ""
+                    # Prefer plain text part, fall back to HTML
+                    plain_body = ""
+                    html_body = ""
                     if msg.is_multipart():
                         for part in msg.walk():
                             ctype = part.get_content_type()
-                            if ctype in ("text/plain", "text/html"):
-                                try:
-                                    body += part.get_payload(decode=True).decode(errors="ignore")
-                                except Exception:
-                                    pass
+                            try:
+                                payload = part.get_payload(decode=True)
+                                if payload is None:
+                                    continue
+                                decoded = payload.decode(errors="ignore")
+                                if ctype == "text/plain":
+                                    plain_body += decoded
+                                elif ctype == "text/html":
+                                    html_body += decoded
+                            except Exception:
+                                pass
                     else:
                         try:
-                            body = msg.get_payload(decode=True).decode(errors="ignore")
+                            raw = msg.get_payload(decode=True)
+                            if raw:
+                                plain_body = raw.decode(errors="ignore")
                         except Exception:
                             pass
 
-                    match = re.search(r'(?:code|verification)[^0-9]{0,40}(\d{6})', body, re.IGNORECASE)
+                    # Use plain text if available, otherwise strip HTML tags
+                    body = plain_body if plain_body.strip() else re.sub(r'<[^>]+>', ' ', html_body)
+                    # Collapse whitespace for easier matching
+                    body = re.sub(r'\s+', ' ', body)
+                    print(f"📝 Body snippet: {body[:300]}")
+
+                    # Pattern 1: "verification code is: 934408" (exact Google format)
+                    match = re.search(r'verification code is[:\s]*(\d{6})', body, re.IGNORECASE)
                     if not match:
+                        # Pattern 2: G-123456 format
+                        match = re.search(r'G[-\s](\d{6})', body)
+                    if not match:
+                        # Pattern 3: "code" within 60 chars of 6-digit number
+                        match = re.search(r'(?:code|verification)[^0-9]{0,60}(\d{6})', body, re.IGNORECASE)
+                    if not match:
+                        # Pattern 4: any standalone 6-digit number (last resort)
                         match = re.search(r'\b(\d{6})\b', body)
 
                     if match:
@@ -73,14 +114,27 @@ def fetch_google_otp(timeout=120, poll_interval=5):
                         print(f"✅ OTP found: {code}")
                         mail.logout()
                         return code
+                    else:
+                        print("⚠️  Email found but no 6-digit code matched in body")
 
-            mail.logout()
+        except imaplib.IMAP4.abort:
+            # Reconnect if connection was dropped
+            print("⚠️  IMAP connection dropped, reconnecting...")
+            try:
+                mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+                mail.login(RECOVERY_EMAIL, RECOVERY_APP_PASSWORD)
+            except Exception as e:
+                print(f"⚠️  Reconnect failed: {e}")
         except Exception as e:
             print(f"⚠️  IMAP error: {e}")
 
         print(f"⏳ No OTP yet, waiting {poll_interval}s... ({int(time.time() - start_time)}s elapsed)")
         time.sleep(poll_interval)
 
+    try:
+        mail.logout()
+    except Exception:
+        pass
     raise TimeoutError(f"❌ No OTP received within {timeout}s")
 
 
