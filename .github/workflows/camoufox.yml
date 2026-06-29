@@ -1,4 +1,4 @@
-name: Camoufox Scraper
+name: Camoufox Scraper with Recording
 on: [workflow_dispatch]
 
 jobs:
@@ -11,10 +11,54 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb ffmpeg curl
+
+      - name: Cache Camoufox
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/camoufox
+          key: camoufox-${{ runner.os }}
+
       - name: Install Camoufox
         run: |
           pip install -U camoufox[geoip]
           python -m camoufox fetch
 
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1280x720x24 &
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+          sleep 2
+
+      - name: Start screen recording
+        run: |
+          ffmpeg -y -f x11grab -video_size 1280x720 -framerate 15 -i :99 \
+            -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+            recording.mp4 > ffmpeg.log 2>&1 &
+          echo $! > ffmpeg.pid
+          sleep 2
+
       - name: Run scraper
         run: python scraper.py
+        continue-on-error: true
+
+      - name: Stop screen recording
+        run: |
+          kill -INT $(cat ffmpeg.pid) || true
+          sleep 3
+          ls -lh recording.mp4
+
+      - name: Upload to 0x0.st
+        run: |
+          echo "Uploading recording..."
+          URL=$(curl -sS -F "file=@recording.mp4" -F "expires=24" \
+            -H "User-Agent: gha-uploader/1.0" https://0x0.st)
+          echo "============================================"
+          echo "📹 Recording URL: $URL"
+          echo "============================================"
+          echo "### 📹 Screen Recording" >> $GITHUB_STEP_SUMMARY
+          echo "[Download recording]($URL)" >> $GITHUB_STEP_SUMMARY
+          echo "Expires in 24 hours" >> $GITHUB_STEP_SUMMARY
