@@ -1,8 +1,6 @@
 name: Camoufox Scraper with Recording
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 jobs:
   scrape:
@@ -52,6 +50,11 @@ jobs:
           echo "✅ Recording started (PID: $(cat ffmpeg.pid))"
 
       - name: Run scraper
+        env:
+          GOOGLE_EMAIL: ${{ secrets.GOOGLE_EMAIL }}
+          GOOGLE_PASSWORD: ${{ secrets.GOOGLE_PASSWORD }}
+          RECOVERY_EMAIL: ${{ secrets.RECOVERY_EMAIL }}
+          RECOVERY_APP_PASSWORD: ${{ secrets.RECOVERY_APP_PASSWORD }}
         run: python scraper.py
         continue-on-error: true
 
@@ -133,7 +136,7 @@ jobs:
           echo "### 📸 Screenshots" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          for SHOT in after_email.png after_password.png password_error.png; do
+          for SHOT in 1_after_email.png 2_after_password.png 3_no_otp.png 4_after_otp.png; do
             if [ -f "$SHOT" ]; then
               echo "▶ Uploading $SHOT..."
               URL=$(curl -sS --max-time 60 -F "reqtype=fileupload" -F "fileToUpload=@$SHOT" https://catbox.moe/user/api.php)
