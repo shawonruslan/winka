@@ -1,25 +1,30 @@
-name: Brave Browser Screen Recording (GIF)
+name: Brave Google Sign-in Recording (GIF)
 
 on:
   workflow_dispatch:
     inputs:
-      duration:
-        description: "Recording duration in seconds"
+      email:
+        description: "Email to type"
         required: false
-        default: "20"
+        default: "jahiskeina@gmail.com"
+      duration:
+        description: "Max recording duration in seconds"
+        required: false
+        default: "25"
 
 jobs:
   record:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Brave, Xvfb, ffmpeg
+      - name: Install Brave, Xvfb, ffmpeg, Python deps
         run: |
           sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
             https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" \
             | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
           sudo apt-get update
-          sudo apt-get install -y brave-browser xvfb ffmpeg
+          sudo apt-get install -y brave-browser xvfb ffmpeg python3-pip
+          pip3 install selenium webdriver-manager
 
       - name: Start virtual display
         run: |
@@ -27,34 +32,75 @@ jobs:
           echo "DISPLAY=:99" >> $GITHUB_ENV
           sleep 2
 
-      - name: Start screen recording (raw mp4)
+      - name: Start screen recording
         run: |
           ffmpeg -y -video_size 1280x720 -framerate 15 -f x11grab -i :99 \
             -t ${{ github.event.inputs.duration }} \
             -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
             recording.mp4 &
           echo $! > ffmpeg.pid
+          sleep 1
 
-      - name: Launch Brave at Google sign-in
+      - name: Run Selenium automation
+        env:
+          EMAIL: ${{ github.event.inputs.email }}
         run: |
-          brave-browser --no-sandbox --disable-gpu \
-            --user-data-dir=/tmp/brave-profile \
-            https://accounts.google.com/ &
-          sleep ${{ github.event.inputs.inputs.duration || github.event.inputs.duration }}
+          cat > automate.py <<'EOF'
+          import os, time
+          from selenium import webdriver
+          from selenium.webdriver.chrome.service import Service
+          from selenium.webdriver.chrome.options import Options
+          from selenium.webdriver.common.by import By
+          from selenium.webdriver.common.keys import Keys
+          from selenium.webdriver.support.ui import WebDriverWait
+          from selenium.webdriver.support import expected_conditions as EC
+          from webdriver_manager.chrome import ChromeDriverManager
 
-      - name: Stop recording and browser
+          email = os.environ["EMAIL"]
+
+          opts = Options()
+          opts.binary_location = "/usr/bin/brave-browser"
+          opts.add_argument("--no-sandbox")
+          opts.add_argument("--disable-gpu")
+          opts.add_argument("--disable-dev-shm-usage")
+          opts.add_argument("--window-size=1280,720")
+          opts.add_argument("--user-data-dir=/tmp/brave-profile")
+
+          driver = webdriver.Chrome(
+              service=Service(ChromeDriverManager().install()),
+              options=opts,
+          )
+
+          try:
+              driver.get("https://accounts.google.com/")
+              field = WebDriverWait(driver, 15).until(
+                  EC.presence_of_element_located((By.ID, "identifierId"))
+              )
+              time.sleep(2)  # let the page settle on the recording
+              # Type slowly so it's visible in the GIF
+              for ch in email:
+                  field.send_keys(ch)
+                  time.sleep(0.08)
+              time.sleep(1)
+              field.send_keys(Keys.ENTER)
+              # Allow time for the next page to load and be captured
+              time.sleep(8)
+          finally:
+              driver.quit()
+          EOF
+          python3 automate.py
+
+      - name: Stop recording
         if: always()
         run: |
-          [ -f ffmpeg.pid ] && wait $(cat ffmpeg.pid) 2>/dev/null || true
-          pkill -f brave-browser || true
-          sleep 2
+          [ -f ffmpeg.pid ] && kill $(cat ffmpeg.pid) 2>/dev/null || true
+          # Wait for ffmpeg to flush the file
+          sleep 3
 
       - name: Convert mp4 to optimized GIF
         run: |
-          # Generate a color palette for higher-quality GIF
           ffmpeg -y -i recording.mp4 \
             -vf "fps=12,scale=960:-1:flags=lanczos,palettegen" palette.png
-          # Use palette to produce final GIF
           ffmpeg -y -i recording.mp4 -i palette.png \
             -lavfi "fps=12,scale=960:-1:flags=lanczos [x]; [x][1:v] paletteuse" \
             recording.gif
