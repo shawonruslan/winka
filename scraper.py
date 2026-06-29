@@ -11,11 +11,7 @@ with Camoufox(
     page = browser.new_page()
     page.set_viewport_size({"width": 1280, "height": 720})
 
-    print("📄 Loading bot detection test page...")
-    page.goto('https://bot.sannysoft.com', wait_until='domcontentloaded')
-    time.sleep(6)
-
-    print("📄 Loading example.com...")
+    print("📄 Loading...")
     page.goto('https://accounts.google.com/', wait_until='domcontentloaded')
     time.sleep(4)
 
