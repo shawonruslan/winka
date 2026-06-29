@@ -1,34 +1,11 @@
-from camoufox import Camoufox
-import requests
+from camoufox.sync_api import Camoufox
 
-URL = "https://accounts.google.com"
-
-browser = Camoufox(headless=True)
-
-page = browser.new_page()
-
-page.goto(URL)
-
-page.wait_for_load_state("networkidle")
-
-page.screenshot(
-    path="screenshot.png",
-    full_page=True
-)
-
-browser.close()
-
-# Upload to catbox
-with open("screenshot.png", "rb") as f:
-    r = requests.post(
-        "https://catbox.moe/user/api.php",
-        data={
-            "reqtype": "fileupload"
-        },
-        files={
-            "fileToUpload": f
-        }
-    )
-
-print("Image URL:")
-print(r.text)
+with Camoufox(
+    headless=True,           # works fine on GHA runners
+    humanize=True,           # human-like cursor movement
+    geoip=True,              # auto-match locale to proxy IP
+    # proxy={'server': 'http://user:pass@host:port'},
+) as browser:
+    page = browser.new_page()
+    page.goto('https://example.com')
+    print(page.title())
