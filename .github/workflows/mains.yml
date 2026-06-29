@@ -1,0 +1,67 @@
+name: Brave Browser Screen Recording (GIF)
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Recording duration in seconds"
+        required: false
+        default: "20"
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Brave, Xvfb, ffmpeg
+        run: |
+          sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+            https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" \
+            | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
+          sudo apt-get update
+          sudo apt-get install -y brave-browser xvfb ffmpeg
+
+      - name: Start virtual display
+        run: |
+          Xvfb :99 -screen 0 1280x720x24 &
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+          sleep 2
+
+      - name: Start screen recording (raw mp4)
+        run: |
+          ffmpeg -y -video_size 1280x720 -framerate 15 -f x11grab -i :99 \
+            -t ${{ github.event.inputs.duration }} \
+            -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+            recording.mp4 &
+          echo $! > ffmpeg.pid
+
+      - name: Launch Brave at Google sign-in
+        run: |
+          brave-browser --no-sandbox --disable-gpu \
+            --user-data-dir=/tmp/brave-profile \
+            https://accounts.google.com/ &
+          sleep ${{ github.event.inputs.inputs.duration || github.event.inputs.duration }}
+
+      - name: Stop recording and browser
+        if: always()
+        run: |
+          [ -f ffmpeg.pid ] && wait $(cat ffmpeg.pid) 2>/dev/null || true
+          pkill -f brave-browser || true
+          sleep 2
+
+      - name: Convert mp4 to optimized GIF
+        run: |
+          # Generate a color palette for higher-quality GIF
+          ffmpeg -y -i recording.mp4 \
+            -vf "fps=12,scale=960:-1:flags=lanczos,palettegen" palette.png
+          # Use palette to produce final GIF
+          ffmpeg -y -i recording.mp4 -i palette.png \
+            -lavfi "fps=12,scale=960:-1:flags=lanczos [x]; [x][1:v] paletteuse" \
+            recording.gif
+          ls -lh recording.gif
+
+      - name: Upload GIF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: brave-recording-gif
+          path: recording.gif
