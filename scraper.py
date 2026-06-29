@@ -138,6 +138,14 @@ def fetch_google_otp(timeout=120, poll_interval=5):
     raise TimeoutError(f"❌ No OTP received within {timeout}s")
 
 
+
+def type_like_human(locator, text, delay_ms=80):
+    """Type text character by character to mimic human input."""
+    for char in text:
+        locator.press(char)
+        time.sleep(delay_ms / 1000 + (0.02 * (ord(char) % 3)))
+
+
 print("🚀 Starting Camoufox...")
 
 with Camoufox(
@@ -154,18 +162,61 @@ with Camoufox(
     page = context.new_page()
 
     print("📄 Loading Google sign-in...")
-    page.goto('https://accounts.google.com/', wait_until='domcontentloaded')
-    time.sleep(5)
+    page.goto('https://accounts.google.com/signin/v2/identifier', wait_until='domcontentloaded')
+    time.sleep(4)
+    page.screenshot(path='0_start.png', full_page=True)
+    print(f"📍 Start URL: {page.url}")
 
     # ===== STEP 1: Email =====
     print("⌨️  Filling email...")
-    email_input = page.locator('input#identifierId')
-    email_input.wait_for(state='visible', timeout=15000)
+
+    # Try multiple selectors for the email field
+    email_selectors = [
+        'input#identifierId',
+        'input[type="email"]',
+        'input[name="identifier"]',
+        'input[autocomplete="username"]',
+    ]
+    email_input = None
+    for sel in email_selectors:
+        try:
+            loc = page.locator(sel).first
+            loc.wait_for(state='visible', timeout=8000)
+            email_input = loc
+            print(f"✅ Email field found: {sel}")
+            break
+        except Exception:
+            continue
+
+    if email_input is None:
+        page.screenshot(path='ERR_no_email_field.png', full_page=True)
+        raise RuntimeError("❌ Could not find email input field! Check ERR_no_email_field.png")
+
     email_input.click()
+    time.sleep(0.8)
+    # Clear any pre-filled value first
+    email_input.triple_click()
+    time.sleep(0.3)
+    email_input.press("Control+a")
+    time.sleep(0.2)
+    email_input.press("Delete")
+    time.sleep(0.3)
+    # Type like a human instead of fill()
+    type_like_human(email_input, EMAIL)
     time.sleep(1)
-    email_input.fill(EMAIL)
-    time.sleep(2)
+
+    # Try Enter first, then click the Next button as fallback
     email_input.press('Enter')
+    time.sleep(1)
+
+    # Click "Next" button if it's visible (some Google flows require it)
+    try:
+        next_btn = page.locator('button:has-text("Next"), #identifierNext button').first
+        next_btn.wait_for(state='visible', timeout=3000)
+        next_btn.click()
+        print("🖱️  Clicked Next button after email")
+    except Exception:
+        pass  # Enter already submitted
 
     time.sleep(6)
     page.screenshot(path='1_after_email.png', full_page=True)
@@ -173,17 +224,49 @@ with Camoufox(
 
     # ===== STEP 2: Password =====
     print("⌨️  Filling password...")
-    password_input = page.locator('input[name="Passwd"]')
-    password_input.wait_for(state='visible', timeout=20000)
+
+    password_selectors = [
+        'input[name="Passwd"]',
+        'input[type="password"]',
+        'input[name="password"]',
+        'input[autocomplete="current-password"]',
+    ]
+    password_input = None
+    for sel in password_selectors:
+        try:
+            loc = page.locator(sel).first
+            loc.wait_for(state='visible', timeout=15000)
+            password_input = loc
+            print(f"✅ Password field found: {sel}")
+            break
+        except Exception:
+            continue
+
+    if password_input is None:
+        page.screenshot(path='ERR_no_password_field.png', full_page=True)
+        raise RuntimeError("❌ Could not find password field! Check ERR_no_password_field.png")
+
     password_input.click()
+    time.sleep(0.8)
+    type_like_human(password_input, PASSWORD)
     time.sleep(1)
-    password_input.fill(PASSWORD)
-    time.sleep(2)
+
     password_input.press('Enter')
+    time.sleep(1)
+
+    # Click "Next" button if visible
+    try:
+        next_btn = page.locator('button:has-text("Next"), #passwordNext button').first
+        next_btn.wait_for(state='visible', timeout=3000)
+        next_btn.click()
+        print("🖱️  Clicked Next button after password")
+    except Exception:
+        pass
 
     time.sleep(10)
     page.screenshot(path='2_after_password.png', full_page=True)
     print(f"📍 URL after password: {page.url}")
+
 
     # ===== STEP 3: OTP =====
     print("🔍 Checking if OTP challenge is shown...")
