@@ -17,28 +17,19 @@ def fetch_google_otp(timeout=120, poll_interval=5):
     """Poll the recovery Gmail inbox via IMAP for a Google verification code."""
     print(f"📬 Connecting to IMAP for {RECOVERY_EMAIL}...")
     start_time = time.time()
-    # Use 2 min window so we catch emails that just arrived
-    since_time = datetime.now(timezone.utc) - timedelta(minutes=2)
-
-    mail = None
-    try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-        mail.login(RECOVERY_EMAIL, RECOVERY_APP_PASSWORD)
-        print("✅ IMAP login successful")
-    except Exception as e:
-        raise RuntimeError(f"❌ IMAP login failed: {e}")
+    since_time = datetime.now(timezone.utc) - timedelta(minutes=15)
 
     while time.time() - start_time < timeout:
         try:
+            mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+            mail.login(RECOVERY_EMAIL, RECOVERY_APP_PASSWORD)
             mail.select("inbox")
 
-            # ✅ SINCE must NOT have quotes around the date
             date_str = since_time.strftime("%d-%b-%Y")
             status, messages = mail.search(
                 None,
-                f'(FROM "no-reply@accounts.google.com" SINCE {date_str})'
+                f'(FROM "google.com" SINCE "{date_str}")'
             )
-            print(f"🔍 IMAP search status={status}, ids={messages}")
 
             if status == "OK" and messages[0]:
                 ids = messages[0].split()
@@ -48,65 +39,37 @@ def fetch_google_otp(timeout=120, poll_interval=5):
                         continue
 
                     msg = email.message_from_bytes(data[0][1])
-                    msg_date_str = msg.get("Date", "")
-                    try:
-                        msg_date = email.utils.parsedate_to_datetime(msg_date_str)
-                        # Make naive datetimes timezone-aware for comparison
-                        if msg_date.tzinfo is None:
-                            msg_date = msg_date.replace(tzinfo=timezone.utc)
-                        if msg_date < since_time:
-                            print(f"⏩ Skipping old email from {msg_date}")
-                            continue
-                    except Exception as de:
-                        print(f"⚠️  Could not parse email date '{msg_date_str}': {de}")
+                    msg_date = email.utils.parsedate_to_datetime(msg["Date"])
+                    # Safely handle naive vs aware datetimes
+                    if msg_date.tzinfo is None:
+                        msg_date = msg_date.replace(tzinfo=timezone.utc)
+                    if msg_date < since_time:
+                        continue
 
                     subject_raw = decode_header(msg["Subject"])[0]
                     subject = subject_raw[0]
                     if isinstance(subject, bytes):
                         subject = subject.decode(errors="ignore")
-                    print(f"📧 Found email: {subject}")
+                    sender = msg.get("From", "Unknown Sender")
+                    print(f"📧 Found email: '{subject}' from '{sender}'")
 
-                    # Prefer plain text part, fall back to HTML
-                    plain_body = ""
-                    html_body = ""
+                    body = ""
                     if msg.is_multipart():
                         for part in msg.walk():
                             ctype = part.get_content_type()
-                            try:
-                                payload = part.get_payload(decode=True)
-                                if payload is None:
-                                    continue
-                                decoded = payload.decode(errors="ignore")
-                                if ctype == "text/plain":
-                                    plain_body += decoded
-                                elif ctype == "text/html":
-                                    html_body += decoded
-                            except Exception:
-                                pass
+                            if ctype in ("text/plain", "text/html"):
+                                try:
+                                    body += part.get_payload(decode=True).decode(errors="ignore")
+                                except Exception:
+                                    pass
                     else:
                         try:
-                            raw = msg.get_payload(decode=True)
-                            if raw:
-                                plain_body = raw.decode(errors="ignore")
+                            body = msg.get_payload(decode=True).decode(errors="ignore")
                         except Exception:
                             pass
 
-                    # Use plain text if available, otherwise strip HTML tags
-                    body = plain_body if plain_body.strip() else re.sub(r'<[^>]+>', ' ', html_body)
-                    # Collapse whitespace for easier matching
-                    body = re.sub(r'\s+', ' ', body)
-                    print(f"📝 Body snippet: {body[:300]}")
-
-                    # Pattern 1: "verification code is: 934408" (exact Google format)
-                    match = re.search(r'verification code is[:\s]*(\d{6})', body, re.IGNORECASE)
+                    match = re.search(r'(?:code|verification)[^0-9]{0,40}(\d{6})', body, re.IGNORECASE)
                     if not match:
-                        # Pattern 2: G-123456 format
-                        match = re.search(r'G[-\s](\d{6})', body)
-                    if not match:
-                        # Pattern 3: "code" within 60 chars of 6-digit number
-                        match = re.search(r'(?:code|verification)[^0-9]{0,60}(\d{6})', body, re.IGNORECASE)
-                    if not match:
-                        # Pattern 4: any standalone 6-digit number (last resort)
                         match = re.search(r'\b(\d{6})\b', body)
 
                     if match:
@@ -114,36 +77,15 @@ def fetch_google_otp(timeout=120, poll_interval=5):
                         print(f"✅ OTP found: {code}")
                         mail.logout()
                         return code
-                    else:
-                        print("⚠️  Email found but no 6-digit code matched in body")
 
-        except imaplib.IMAP4.abort:
-            # Reconnect if connection was dropped
-            print("⚠️  IMAP connection dropped, reconnecting...")
-            try:
-                mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-                mail.login(RECOVERY_EMAIL, RECOVERY_APP_PASSWORD)
-            except Exception as e:
-                print(f"⚠️  Reconnect failed: {e}")
+            mail.logout()
         except Exception as e:
             print(f"⚠️  IMAP error: {e}")
 
         print(f"⏳ No OTP yet, waiting {poll_interval}s... ({int(time.time() - start_time)}s elapsed)")
         time.sleep(poll_interval)
 
-    try:
-        mail.logout()
-    except Exception:
-        pass
     raise TimeoutError(f"❌ No OTP received within {timeout}s")
-
-
-
-def type_like_human(locator, text, delay_ms=80):
-    """Type text character by character to mimic human input."""
-    for char in text:
-        locator.press(char)
-        time.sleep(delay_ms / 1000 + (0.02 * (ord(char) % 3)))
 
 
 print("🚀 Starting Camoufox...")
@@ -162,61 +104,18 @@ with Camoufox(
     page = context.new_page()
 
     print("📄 Loading Google sign-in...")
-    page.goto('https://accounts.google.com/signin/v2/identifier', wait_until='domcontentloaded')
-    time.sleep(4)
-    page.screenshot(path='0_start.png', full_page=True)
-    print(f"📍 Start URL: {page.url}")
+    page.goto('https://accounts.google.com/', wait_until='domcontentloaded')
+    time.sleep(5)
 
     # ===== STEP 1: Email =====
     print("⌨️  Filling email...")
-
-    # Try multiple selectors for the email field
-    email_selectors = [
-        'input#identifierId',
-        'input[type="email"]',
-        'input[name="identifier"]',
-        'input[autocomplete="username"]',
-    ]
-    email_input = None
-    for sel in email_selectors:
-        try:
-            loc = page.locator(sel).first
-            loc.wait_for(state='visible', timeout=8000)
-            email_input = loc
-            print(f"✅ Email field found: {sel}")
-            break
-        except Exception:
-            continue
-
-    if email_input is None:
-        page.screenshot(path='ERR_no_email_field.png', full_page=True)
-        raise RuntimeError("❌ Could not find email input field! Check ERR_no_email_field.png")
-
+    email_input = page.locator('input#identifierId')
+    email_input.wait_for(state='visible', timeout=15000)
     email_input.click()
-    time.sleep(0.8)
-    # Clear any pre-filled value first
-    email_input.triple_click()
-    time.sleep(0.3)
-    email_input.press("Control+a")
-    time.sleep(0.2)
-    email_input.press("Delete")
-    time.sleep(0.3)
-    # Type like a human instead of fill()
-    type_like_human(email_input, EMAIL)
     time.sleep(1)
-
-    # Try Enter first, then click the Next button as fallback
+    email_input.fill(EMAIL)
+    time.sleep(2)
     email_input.press('Enter')
-    time.sleep(1)
-
-    # Click "Next" button if it's visible (some Google flows require it)
-    try:
-        next_btn = page.locator('button:has-text("Next"), #identifierNext button').first
-        next_btn.wait_for(state='visible', timeout=3000)
-        next_btn.click()
-        print("🖱️  Clicked Next button after email")
-    except Exception:
-        pass  # Enter already submitted
 
     time.sleep(6)
     page.screenshot(path='1_after_email.png', full_page=True)
@@ -224,49 +123,17 @@ with Camoufox(
 
     # ===== STEP 2: Password =====
     print("⌨️  Filling password...")
-
-    password_selectors = [
-        'input[name="Passwd"]',
-        'input[type="password"]',
-        'input[name="password"]',
-        'input[autocomplete="current-password"]',
-    ]
-    password_input = None
-    for sel in password_selectors:
-        try:
-            loc = page.locator(sel).first
-            loc.wait_for(state='visible', timeout=15000)
-            password_input = loc
-            print(f"✅ Password field found: {sel}")
-            break
-        except Exception:
-            continue
-
-    if password_input is None:
-        page.screenshot(path='ERR_no_password_field.png', full_page=True)
-        raise RuntimeError("❌ Could not find password field! Check ERR_no_password_field.png")
-
+    password_input = page.locator('input[name="Passwd"]')
+    password_input.wait_for(state='visible', timeout=20000)
     password_input.click()
-    time.sleep(0.8)
-    type_like_human(password_input, PASSWORD)
     time.sleep(1)
-
+    password_input.fill(PASSWORD)
+    time.sleep(2)
     password_input.press('Enter')
-    time.sleep(1)
-
-    # Click "Next" button if visible
-    try:
-        next_btn = page.locator('button:has-text("Next"), #passwordNext button').first
-        next_btn.wait_for(state='visible', timeout=3000)
-        next_btn.click()
-        print("🖱️  Clicked Next button after password")
-    except Exception:
-        pass
 
     time.sleep(10)
     page.screenshot(path='2_after_password.png', full_page=True)
     print(f"📍 URL after password: {page.url}")
-
 
     # ===== STEP 3: OTP =====
     print("🔍 Checking if OTP challenge is shown...")
